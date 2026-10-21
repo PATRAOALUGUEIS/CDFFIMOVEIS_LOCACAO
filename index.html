@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gestão de Alugueis - Nuvem</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Firebase SDK (Google) -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+        import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+        import { getFirestore, collection, addDoc, deleteDoc, doc, updateDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+
+        // Configuração do Firebase
+        const firebaseConfig = {
+            apiKey: "AIzaSyAuojCvC4w3HAsWiN-4P7w1PYA9PLfk6p0",
+            authDomain: "cdffimoveis-locacao.firebaseapp.com",
+            projectId: "cdffimoveis-locacao",
+            storageBucket: "cdffimoveis-locacao.firebasestorage.app",
+            messagingSenderId: "358929298465",
+            appId: "1:358929298465:web:b948825747bc98f4cb1f60"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+
+        let usuarioAtual = null;
+        let unsubscribeDados = null;
+
+        // Monitorar Login
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                usuarioAtual = user;
+                document.getElementById('tela-login').classList.add('hidden');
+                document.getElementById('tela-app').classList.remove('hidden');
+                carregarDadosTempoReal();
+            } else {
+                usuarioAtual = null;
+                document.getElementById('tela-login').classList.remove('hidden');
+                document.getElementById('tela-app').classList.add('hidden');
+                if (unsubscribeDados) unsubscribeDados();
+            }
+        });
+
+        window.fazerLogin = function(event) {
+            event.preventDefault();
+            const email = document.getElementById('email-login').value.trim();
+            const senha = document.getElementById('senha-login').value;
+            
+            if (!email || !senha) {
+                alert("Preencha o e-mail e a senha!");
+                return;
+            }
+
+            signInWithEmailAndPassword(auth, email, senha)
+                .catch((error) => alert("Erro ao entrar: " + error.message));
+        };
+
+        window.criarConta = function() {
+            const email = document.getElementById('email-login').value.trim();
+            const senha = document.getElementById('senha-login').value;
+            
+            if (!email || !senha) {
+                alert("Preencha o e-mail e a senha para criar a conta!");
+                return;
+            }
+
+            createUserWithEmailAndPassword(auth, email, senha)
+                .catch((error) => alert("Erro ao cadastrar: " + error.message));
+        };
+
+        window.esqueciSenha = function() {
+            const email = document.getElementById('email-login').value.trim();
+            if (!email) {
+                alert("Digite o seu e-mail no campo acima primeiro para recuperar a senha!");
+                return;
+            }
+            sendPasswordResetEmail(auth, email)
+                .then(() => {
+                    alert("E-mail de recuperação enviado! Verifique sua caixa de entrada e spam.");
+                })
+                .catch((error) => {
+                    alert("Erro ao enviar e-mail: " + error.message);
+                });
+        };
+
+        window.fazerLogout = function() {
+            signOut(auth);
+        };
+
+        // Funções do Banco de Dados
+        window.salvarInquilino = async function(event) {
+            event.preventDefault();
+            if (!usuarioAtual) return;
+
+            const novo = {
+                uid: usuarioAtual.uid,
+                nome: document.getElementById('nome').value,
+                imovel: document.getElementById('imovel').value,
+                proprietario: document.getElementById('proprietario').value,
+                whatsapp: document.getElementById('whatsapp').value.replace(/\D/g, ''),
+                valor: parseFloat(document.getElementById('valor').value),
+                diaVencimento: parseInt(document.getElementById('diaVencimento').value),
+                pagoEsteMes: false,
+                criadoEm: Date.now()
+            };
+
+            try {
+                await addDoc(collection(db, "inquilinos"), novo);
+                document.getElementById('form-inquilino').reset();
+                mudarAba('dashboard');
+            } catch (e) {
+                alert("Erro ao salvar: " + e.message);
+            }
+        };
+
+        window.excluirInquilino = async function(id) {
+            if (confirm('Deseja realmente excluir este inquilino?')) {
+                try {
+                    await deleteDoc(doc(db, "inquilinos", id));
+                } catch (e) {
+                    alert("Erro ao excluir: " + e.message);
+                }
+            }
+        };
+
+        window.alternarPagamento = async function(id, atualStatus) {
+            try {
+                const ref = doc(db, "inquilinos", id);
+                await updateDoc(ref, { pagoEsteMes: !atualStatus });
+            } catch (e) {
+                alert("Erro ao atualizar pagamento: " + e.message);
+            }
+        };
+
+        function carregarDadosTempoReal() {
+            const q = collection(db, "inquilinos");
+            unsubscribeDados = onSnapshot(q, (snapshot) => {
+                let dados = [];
+                snapshot.forEach((docSnap) => {
+                    let item = docSnap.data();
+                    if (item.uid === usuarioAtual.uid) {
+                        dados.push({ id: docSnap.id, ...item });
+                    }
+                });
+                renderizarTabelas(dados);
+            });
+        }
+
+        function renderizarTabelas(dados) {
+            const tbodyDash = document.getElementById('tabela-dashboard');
+            const tbodyInq = document.getElementById('tabela-inquilinos');
+            tbodyDash.innerHTML = '';
+            tbodyInq.innerHTML = '';
+
+            const hoje = new Date();
+            const diaAtual = hoje.getDate();
+
+            let countVencidos = 0;
+            let countProximos = 0;
+            let countPagos = 0;
+
+            if (dados.length === 0) {
+                tbodyDash.innerHTML = `<tr><td colspan="7" class="p-6 text-center text-gray-400">Nenhum inquilino cadastrado.</td></tr>`;
+                tbodyInq.innerHTML = `<tr><td colspan="6" class="p-6 text-center text-gray-400">Nenhum inquilino cadastrado.</td></tr>`;
+            }
+
+            dados.forEach(item => {
+                let statusHTML = '';
+
+                if (item.pagoEsteMes) {
+                    countPagos++;
+                    statusHTML = `<span class="bg-green-100 text-green-700 px-2.5 py-1 rounded-full text-xs font-bold">Pago</span>`;
+                } else if (diaAtual > item.diaVencimento) {
+                    countVencidos++;
+                    const diasAtraso = diaAtual - item.diaVencimento;
+                    statusHTML = `<span class="bg-red-100 text-red-700 px-2.5 py-1 rounded-full text-xs font-bold">Vencido (${diasAtraso}d atrás)</span>`;
+                } else {
+                    countProximos++;
+                    statusHTML = `<span class="bg-amber-100 text-amber-700 px-2.5 py-1 rounded-full text-xs font-bold">A Vencer</span>`;
+                }
+
+                const zapLimpo = item.whatsapp ? item.whatsapp.replace(/\D/g, '') : '';
+                const msgZap = encodeURIComponent(`Olá ${item.nome}! Passando para lembrar sobre o aluguel da ${item.imovel} no valor de R$ ${item.valor.toFixed(2)} com vencimento dia ${item.diaVencimento}.`);
+                const linkZap = `https://wa.me/55${zapLimpo}?text=${msgZap}`;
+
+                // Tratativa caso o cadastro antigo não tenha o campo proprietário salvo
+                const dono = item.proprietario || 'Não informado';
+
+                tbodyDash.innerHTML += `
+                    <tr class="hover:bg-gray-50 border-b border-gray-100">
+                        <td class="p-3 font-medium text-gray-800">${item.nome}</td>
+                        <td class="p-3 text-gray-600">${item.imovel}</td>
+                        <td class="p-3 text-gray-600">Dia ${item.diaVencimento}</td>
+                        <td class="p-3 font-semibold text-gray-800">R$ ${item.valor.toFixed(2)}</td>
+                        <td class="p-3 text-gray-600 font-medium"><i class="fa-solid fa-user-tie text-blue-500 mr-1"></i>${dono}</td>
+                        <td class="p-3">${statusHTML}</td>
+                        <td class="p-3 text-center space-x-1">
+                            <button onclick="alternarPagamento('${item.id}', ${item.pagoEsteMes})" class="bg-emerald-500 text-white px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-emerald-600 transition">
+                                <i class="fa-solid fa-check"></i> ${item.pagoEsteMes ? 'Desfazer' : 'Dar Baixa'}
+                            </button>
+                            <a href="${linkZap}" target="_blank" class="inline-block bg-green-600 text-white px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-green-700 transition">
+                                <i class="fa-brands fa-whatsapp"></i> WhatsApp
+                            </a>
+                        </td>
+                    </tr>
+                `;
+
+                tbodyInq.innerHTML += `
+                    <tr class="hover:bg-gray-50 border-b border-gray-100">
+                        <td class="p-3 font-medium text-gray-800">${item.nome}</td>
+                        <td class="p-3 text-gray-600">${item.imovel}</td>
+                        <td class="p-3 text-gray-600">${dono}</td>
+                        <td class="p-3 text-gray-600">${item.whatsapp}</td>
+                        <td class="p-3 font-semibold text-gray-800">R$ ${item.valor.toFixed(2)}</td>
+                        <td class="p-3 text-center">
+                            <button onclick="excluirInquilino('${item.id}')" class="bg-red-500 text-white px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-red-600 transition">
+                                <i class="fa-solid fa-trash"></i> Excluir
+                            </button>
+                        </td>
+                    </tr>
+                `;
+            });
+
+            document.getElementById('total-vencidos').innerText = countVencidos;
+            document.getElementById('total-proximos').innerText = countProximos;
+            document.getElementById('total-pagos').innerText = countPagos;
+        }
+
+        window.mudarAba = function(aba) {
+            if (aba === 'dashboard') {
+                document.getElementById('aba-dashboard').classList.remove('hidden');
+                document.getElementById('aba-inquilinos').classList.add('hidden');
+                document.getElementById('btn-dashboard').className = 'bg-blue-700 px-4 py-2 rounded-lg font-medium transition';
+                document.getElementById('btn-inquilinos').className = 'bg-blue-600 px-4 py-2 rounded-lg font-medium transition hover:bg-blue-700';
+            } else {
+                document.getElementById('aba-dashboard').classList.add('hidden');
+                document.getElementById('aba-inquilinos').classList.remove('hidden');
+                document.getElementById('btn-inquilinos').className = 'bg-blue-700 px-4 py-2 rounded-lg font-medium transition';
+                document.getElementById('btn-dashboard').className = 'bg-blue-600 px-4 py-2 rounded-lg font-medium transition hover:bg-blue-700';
+            }
+        }
+    </script>
+</head>
+<body class="bg-gray-50 text-gray-800 font-sans">
+
+    <!-- TELA DE LOGIN / CADASTRO -->
+    <div id="tela-login" class="min-h-screen flex items-center justify-center p-4">
+        <div class="bg-white p-8 rounded-2xl shadow-md w-full max-w-md border border-gray-200 space-y-6">
+            <div class="text-center">
+                <i class="fa-solid fa-house-chimney text-4xl text-blue-600 mb-2"></i>
+                <h1 class="text-2xl font-bold text-gray-800">Gestão de Alugueis</h1>
+                <p class="text-xs text-gray-500 mt-1">Entre com sua conta para acessar na nuvem</p>
+            </div>
+            <form onsubmit="fazerLogin(event)" class="space-y-4">
+                <div>
+                    <label class="block text-xs font-bold text-gray-600 uppercase mb-1">E-mail</label>
+                    <input type="email" id="email-login" required class="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none text-sm" placeholder="seu@email.com">
+                </div>
+                <div>
+                    <label class="block text-xs font-bold text-gray-600 uppercase mb-1">Senha</label>
+                    <input type="password" id="senha-login" required class="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none text-sm" placeholder="••••••••">
+                </div>
+                <div class="flex gap-2 pt-2">
+                    <button type="submit" class="flex-1 bg-blue-600 text-white font-bold py-3 rounded-lg hover:bg-blue-700 transition text-sm">Entrar</button>
+                    <button type="button" onclick="criarConta()" class="flex-1 bg-gray-200 text-gray-700 font-bold py-3 rounded-lg hover:bg-gray-300 transition text-sm">Criar Conta</button>
+                </div>
+                <div class="text-center pt-1">
+                    <button type="button" onclick="esqueciSenha()" class="text-xs text-blue-600 hover:underline font-medium">Esqueceu sua senha?</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- TELA PRINCIPAL DO APP -->
+    <div id="tela-app" class="hidden">
+        <header class="bg-blue-600 text-white shadow-md">
+            <div class="max-w-6xl mx-auto px-4 py-4 flex flex-col md:flex-row justify-between items-center gap-3">
+                <h1 class="text-xl font-bold flex items-center gap-2">
+                    <i class="fa-solid fa-house-chimney"></i> Gestão de Alugueis
+                </h1>
+                <div class="flex flex-wrap gap-2 justify-center items-center">
+                    <button onclick="mudarAba('dashboard')" id="btn-dashboard" class="bg-blue-700 px-4 py-2 rounded-lg font-medium transition">Início</button>
+                    <button onclick="mudarAba('inquilinos')" id="btn-inquilinos" class="bg-blue-600 px-4 py-2 rounded-lg font-medium transition hover:bg-blue-700">Inquilinos</button>
+                    <button onclick="fazerLogout()" class="bg-red-500 px-3 py-2 rounded-lg font-medium transition hover:bg-red-600 text-xs ml-2"><i class="fa-solid fa-right-from-bracket"></i> Sair</button>
+                </div>
+            </div>
+        </header>
+
+        <main class="max-w-6xl mx-auto p-4 md:p-6 space-y-6">
+            <!-- DASHBOARD -->
+            <section id="aba-dashboard" class="space-y-6">
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div class="bg-red-50 border-l-4 border-red-500 p-4 rounded-lg shadow-sm">
+                        <p class="text-xs uppercase font-bold text-red-600">Alugueis Vencidos</p>
+                        <p id="total-vencidos" class="text-2xl font-bold text-red-700">0</p>
+                    </div>
+                    <div class="bg-amber-50 border-l-4 border-amber-500 p-4 rounded-lg shadow-sm">
+                        <p class="text-xs uppercase font-bold text-amber-600">Vencem este Mês / Próximos</p>
+                        <p id="total-proximos" class="text-2xl font-bold text-amber-700">0</p>
+                    </div>
+                    <div class="bg-green-50 border-l-4 border-green-500 p-4 rounded-lg shadow-sm">
+                        <p class="text-xs uppercase font-bold text-green-600">Pagos no Mês</p>
+                        <p id="total-pagos" class="text-2xl font-bold text-green-700">0</p>
+                    </div>
+                </div>
+
+                <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                    <div class="p-4 border-b border-gray-200 bg-gray-50 flex justify-between items-center">
+                        <h2 class="font-bold text-gray-700 text-lg">Visão Geral dos Alugueis</h2>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left border-collapse">
+                            <thead>
+                                <tr class="bg-gray-100 text-gray-600 text-xs uppercase tracking-wider">
+                                    <th class="p-3">Inquilino</th>
+                                    <th class="p-3">Imóvel / Casa</th>
+                                    <th class="p-3">Vencimento</th>
+                                    <th class="p-3">Valor</th>
+                                    <th class="p-3">Proprietário</th>
+                                    <th class="p-3">Status</th>
+                                    <th class="p-3 text-center">Ações Rápidas</th>
+                                </tr>
+                            </thead>
+                            <tbody id="tabela-dashboard" class="divide-y divide-gray-200 text-sm"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <!-- CADASTRO -->
+            <section id="aba-inquilinos" class="hidden space-y-6">
+                <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
+                    <h2 class="text-lg font-bold text-gray-700 mb-4"><i class="fa-solid fa-user-plus mr-2 text-blue-600"></i>Cadastrar Novo Inquilino</h2>
+                    <form id="form-inquilino" onsubmit="salvarInquilino(event)" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                        <div>
+                            <label class="block text-xs font-bold text-gray-600 uppercase mb-1">Nome do Inquilino</label>
+                            <input type="text" id="nome" required class="w-full border border-gray-300 rounded-lg p-2.5 outline-none text-sm" placeholder="Ex: João Silva">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-gray-600 uppercase mb-1">Imóvel / Casa</label>
+                            <input type="text" id="imovel" required class="w-full border border-gray-300 rounded-lg p-2.5 outline-none text-sm" placeholder="Ex: Casa 03">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-gray-600 uppercase mb-1">Proprietário (Repasse)</label>
+                            <input type="text" id="proprietario" required class="w-full border border-gray-300 rounded-lg p-2.5 outline-none text-sm" placeholder="Ex: Carlos (Dono)">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-gray-600 uppercase mb-1">WhatsApp</label>
+                            <input type="text" id="whatsapp" required class="w-full border border-gray-300 rounded-lg p-2.5 outline-none text-sm" placeholder="Ex: 11999998888">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-gray-600 uppercase mb-1">Valor (R$)</label>
+                            <input type="number" step="0.01" id="valor" required class="w-full border border-gray-300 rounded-lg p-2.5 outline-none text-sm" placeholder="Ex: 850.00">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-gray-600 uppercase mb-1">Dia do Vencimento</label>
+                            <input type="number" min="1" max="31" id="diaVencimento" required class="w-full border border-gray-300 rounded-lg p-2.5 outline-none text-sm" placeholder="Ex: 10">
+                        </div>
+                        <div class="flex items-end lg:col-span-3">
+                            <button type="submit" class="w-full bg-blue-600 text-white font-bold py-2.5 px-4 rounded-lg hover:bg-blue-700 transition text-sm">Salvar na Nuvem</button>
+                        </div>
+                    </form>
+                </div>
+
+                <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                    <div class="p-4 border-b border-gray-200 bg-gray-50">
+                        <h2 class="font-bold text-gray-700 text-lg">Inquilinos Cadastrados</h2>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left border-collapse">
+                            <thead>
+                                <tr class="bg-gray-100 text-gray-600 text-xs uppercase tracking-wider">
+                                    <th class="p-3">Nome</th>
+                                    <th class="p-3">Imóvel</th>
+                                    <th class="p-3">Proprietário</th>
+                                    <th class="p-3">WhatsApp</th>
+                                    <th class="p-3">Valor</th>
+                                    <th class="p-3 text-center">Ações</th>
+                                </tr>
+                            </thead>
+                            <tbody id="tabela-inquilinos" class="divide-y divide-gray-200 text-sm"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+</body>
+</html>
